@@ -80,7 +80,7 @@ p ........................ push local file -> remote (local picker)
 r ........................ refresh
 P ........................ set/change SSH password (stored in memory only)
 q / Esc .................. close
-Mouse: click selects, 2nd click opens; wheel scrolls (never opens a folder).
+Mouse: click selects, 2nd click opens; wheel scrolls
 ```
 
 ### Local file picker (used by c / p)
@@ -95,16 +95,14 @@ A navigable browser of your LOCAL machine:
 - Mouse: click selects a row; a second click on the same row activates it
   (opens a directory, or chooses a file in 'file' mode). In 'dir'
   mode you can also click the header line to confirm the current
-  directory. Wheel up/down moves the selection (and scrolls the
-  listing when the selection reaches the edge of the visible area).
+  directory. Wheel up/down moves the selection and scrolls.
 
 ### Follow mode (auto-follow the SSH pane's CWD)
 
 When the explorer is opened from an SSH pane, it follows that pane's remote
 working directory: if you `cd` in the terminal, the explorer jumps to match.
 Only changes made in the *SSH pane* are followed — navigating inside the
-explorer never gets reverted by follow, and the very first navigation you do
-after opening is respected (it is not snapped back to the pane's CWD).
+explorer never gets reverted by follow.
 
 ## Troubleshooting
 
