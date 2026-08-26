@@ -2,7 +2,7 @@
 
 > A MobaXterm-style SCP file explorer for the SSH session in your current herdr
 > pane. Browse the remote filesystem in a split pane, then `c` to download or
-> `p` to upload — all over your existing SSH connection (keys or password).
+> `p` to upload — all over your existing SSH connection.
 
 ## Features
 
