@@ -16,10 +16,13 @@ Toggle: if an SCP Explorer pane already exists in the current tab, close it
 instead of opening a second one.
 """
 import json
+import os
 import subprocess
 import sys
 
-HERDR = "herdr"
+# Prefer the running Herdr binary (portable across Unix sockets and Windows
+# named pipes); fall back to "herdr" on PATH for non-Herdr launches.
+HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 
 
 def run_herdr(args):

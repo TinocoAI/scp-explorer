@@ -31,8 +31,28 @@ import tempfile
 import time
 from shutil import which
 
-HERDR = "herdr"
-LOG_PATH = "/tmp/scp-explorer.log"
+# Prefer the running Herdr binary (portable across Unix sockets and Windows
+# named pipes); fall back to "herdr" on PATH for non-Herdr launches.
+HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
+
+
+def _state_dir():
+    """Durable, per-user plugin state directory.
+
+    Herdr sets HERDR_PLUGIN_STATE_DIR for installed/linked plugins; use it so
+    we never write into the (managed, possibly read-only) plugin source root or
+    into /tmp. Fall back to a config location when run outside Herdr.
+    """
+    d = os.environ.get("HERDR_PLUGIN_STATE_DIR")
+    if d:
+        return d
+    return os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+        "herdr", "plugins", "state", "scp-explorer")
+
+
+STATE_DIR = _state_dir()
+LOG_PATH = os.path.join(STATE_DIR, "scp-explorer.log")
 
 # --- Mouse scroll button resolution (portable: macOS / Linux / Windows) ---
 # The wheel is reported as BUTTON4 (up) / BUTTON5 (down). Curses builds differ:
@@ -65,11 +85,8 @@ _UP_MAX = max(BUTTON4_CANDIDATES) if BUTTON4_CANDIDATES else 0
 # Learned down-bit (populated at runtime / from disk).
 _LEARNED_DOWN = [0]
 
-# Persist the learned bit so it survives restarts (per-user config dir).
-_LEARN_PATH = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME",
-                   os.path.expanduser("~/.config")),
-    "herdr", "plugins", "config", "scp-explorer", "mouse_down_bit")
+# Persist the learned bit so it survives restarts (per-user state dir).
+_LEARN_PATH = os.path.join(STATE_DIR, "mouse_down_bit")
 
 
 def _load_learned_down():
@@ -139,7 +156,8 @@ def mouse_debug(mstate):
     if not os.environ.get("HERDR_SCP_MOUSE_DEBUG"):
         return
     try:
-        with open("/tmp/scp-explorer-mouse.log", "a") as f:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(os.path.join(STATE_DIR, "scp-explorer-mouse.log"), "a") as f:
             f.write("mstate=%d (0x%X) dir=%d is_click=%s\n"
                      % (mstate, mstate, mouse_scroll_dir(mstate), is_mouse_click(mstate)))
     except Exception:

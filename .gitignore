@@ -1,11 +1,12 @@
-# Runtime / generated artifacts — never committed
+# Runtime / generated artifacts — never committed.
+# (When Herdr runs the plugin, durable state goes to $HERDR_PLUGIN_STATE_DIR,
+#  outside this repo. These only appear if you run the script directly.)
 mouse_down_bit
-/tmp/scp-explorer*.log
+scp-explorer*.log
 
 # Stray captures / junk that may land in the plugin dir
 *.pcap
 *.pcapng
-*.log
 
 # Python cache
 __pycache__/
