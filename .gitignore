@@ -1,0 +1,19 @@
+# Runtime / generated artifacts — never committed
+mouse_down_bit
+/tmp/scp-explorer*.log
+
+# Stray captures / junk that may land in the plugin dir
+*.pcap
+*.pcapng
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

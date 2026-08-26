@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Detect the SSH session in the focused Herdr pane and open the SCP explorer.
+
+Flow:
+  1. Find the focused pane (herdr pane current).
+  2. Read its foreground process tree (herdr pane process-info).
+  3. If the foreground process is `ssh <target>`, parse user@host / port / jump.
+  4. Seed the starting remote path from the pane's terminal title
+     (e.g. "root@host: /var/log" -> "/var/log").
+  5. Open the explorer pane (herdr plugin pane open) passing the source pane id
+     and start path via --env (plain values, no JSON -> no quoting corruption).
+  6. If no SSH session is detected, still open the explorer pane but flag the
+     error so the user sees a clear message instead of silent nothing.
+
+Toggle: if an SCP Explorer pane already exists in the current tab, close it
+instead of opening a second one.
+"""
+import json
+import subprocess
+import sys
+
+HERDR = "herdr"
+
+
+def run_herdr(args):
+    r = subprocess.run([HERDR] + args, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def get_current_pane():
+    rc, out, _ = run_herdr(["pane", "current"])
+    if rc != 0:
+        return None, "herdr pane current failed"
+    try:
+        pane = json.loads(out)["result"]["pane"]
+        return pane["pane_id"], pane.get("tab_id")
+    except (ValueError, KeyError) as e:
+        return None, f"unexpected pane current shape: {e}"
+
+
+def get_pane_info(pane_id):
+    rc, out, _ = run_herdr(["pane", "get", pane_id])
+    if rc != 0:
+        return {}
+    try:
+        return json.loads(out)["result"]["pane"]
+    except (ValueError, KeyError):
+        return {}
+
+
+def get_process_info(pane_id):
+    rc, out, _ = run_herdr(["pane", "process-info", "--pane", pane_id])
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)["result"]["process_info"]
+    except (ValueError, KeyError):
+        return None
+
+
+def parse_ssh(argv):
+    """Extract {target, port, jump} from an ssh argv list. Returns None if the
+    foreground process isn't ssh, or no destination is found."""
+    if not argv or argv[0] != "ssh":
+        return None
+    args = argv[1:]
+    port = None
+    jump = None
+    target = None
+    flag_with_value = {
+        "-p", "-P", "-J", "--jump-host", "-o", "-i", "-F", "-c", "-b", "-m",
+        "-e", "-W", "-E", "-L", "-R", "-D", "-l", "-B", "-S", "-O",
+    }
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-p", "-P", "-J", "--jump-host"):
+            val = args[i + 1] if i + 1 < len(args) else None
+            if a in ("-p", "-P"):
+                port = val
+            else:
+                jump = val
+            i += 2
+            continue
+        if a.startswith("-"):
+            if a in flag_with_value:
+                i += 2
+            else:
+                i += 1
+            continue
+        target = a
+        break
+    if not target:
+        return None
+    if ":" in target and not target.startswith("["):
+        target = target.split(":", 1)[0]
+    return {"target": target, "port": port, "jump": jump}
+
+
+def path_from_title(pane_info):
+    title = pane_info.get("terminal_title_stripped") or pane_info.get("terminal_title") or ""
+    if ":" in title:
+        after = title.split(":", 1)[1].strip()
+        if after and after != "~":
+            return after
+    return None
+
+
+def find_existing_explorer(tab_id):
+    rc, out, _ = run_herdr(["pane", "list"])
+    if rc != 0:
+        return None
+    try:
+        panes = json.loads(out)["result"]["panes"]
+    except (ValueError, KeyError):
+        return None
+    for p in panes:
+        if p.get("tab_id") == tab_id and p.get("label") == "SCP Explorer":
+            return p["pane_id"]
+    return None
+
+
+def open_explorer(env_pairs):
+    cmd = [
+        "plugin", "pane", "open",
+        "--plugin", "scp-explorer",
+        "--entrypoint", "explorer",
+        "--placement", "split",
+        "--direction", "right",
+    ]
+    for k, v in env_pairs:
+        cmd += ["--env", "%s=%s" % (k, v)]
+    rc, out, err = run_herdr(cmd)
+    if rc != 0:
+        sys.stderr.write(err or out or "failed to open explorer pane\n")
+        return 1
+    return 0
+
+
+def main():
+    pane_id, tab_id = get_current_pane()
+    if not pane_id:
+        return open_explorer([("HERDR_SCP_PANE", ""), ("HERDR_SCP_PATH", "")])
+
+    proc = get_process_info(pane_id)
+    target_obj = None
+    if proc:
+        for p in proc.get("foreground_processes", []):
+            target_obj = parse_ssh(p.get("argv", []))
+            if target_obj:
+                break
+
+    if not target_obj:
+        open_explorer([("HERDR_SCP_PANE", ""), ("HERDR_SCP_PATH", "")])
+        return 0
+
+    pane_info = get_pane_info(pane_id)
+    start_path = path_from_title(pane_info) or "~"
+
+    # Toggle: close an existing explorer in this tab before opening a new one.
+    existing = find_existing_explorer(tab_id) if tab_id else None
+    if existing:
+        run_herdr(["pane", "close", existing])
+        return 0
+
+    return open_explorer([
+        ("HERDR_SCP_PANE", pane_id),
+        ("HERDR_SCP_PATH", start_path),
+    ])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

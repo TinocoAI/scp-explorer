@@ -1,0 +1,33 @@
+id = "scp-explorer"
+name = "SCP Explorer"
+version = "1.0.0"
+min_herdr_version = "0.7.0"
+description = "Open an SCP file explorer for the SSH session in the current pane (MobaXterm-style)."
+platforms = ["macos", "linux", "windows"]
+
+# Cross-platform runtime: invoke via python3 (the entrypoint has a shebang too,
+# but spelling it out here makes Windows happy). On Windows, make sure Python is
+# on PATH as `python3` (or `py -3`); see README "Installing on Windows".
+# The source SSH pane id + starting path are handed in via $HERDR_SCP_PANE and
+# $HERDR_SCP_PATH (plain env vars -- immune to JSON shell-quoting corruption).
+# The explorer also self-detects the ssh session if those are absent.
+[[panes]]
+id = "explorer"
+title = "SCP Explorer"
+placement = "split"
+command = ["python3", "src/explorer.py"]
+
+# Action: detects the SSH session in the focused pane, then opens the explorer
+# pane alongside it. Keybindings can only target actions, so this is the bridge.
+[[actions]]
+id = "open"
+title = "Open SCP Explorer for current SSH pane"
+contexts = ["pane"]
+command = ["./bin/scp-explorer-action"]
+
+# prefix+f — f = files. Free letter (mirror uses shift/alt, live-sync uses a/y).
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "scp-explorer.open"
+description = "open SCP file explorer for the SSH session in this pane"
