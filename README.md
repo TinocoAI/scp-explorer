@@ -89,17 +89,19 @@ Mouse: click selects, 2nd click opens; wheel scrolls
 
 ### Local file picker (used by c / p)
 
+```
 A navigable browser of your LOCAL machine:
 - Up/Down / PgUp / PgDn ... move
 - Enter ................... open a directory (or choose a file in 'file' mode)
-- Tab (dir mode) ......... confirm the current directory as the target
-- g ...................... go to ~
-- / ...................... jump to an absolute local path
-- Esc / q ................ cancel
+- Tab (dir mode) .......... confirm the current directory as the target
+- g ....................... go to ~
+- / ....................... jump to an absolute local path
+- Esc / q ................. cancel
 - Mouse: click selects a row; a second click on the same row activates it
   (opens a directory, or chooses a file in 'file' mode). In 'dir'
   mode you can also click the header line to confirm the current
   directory. Wheel up/down moves the selection and scrolls.
+```
 
 ### Follow mode (auto-follow the SSH pane's CWD)
 
