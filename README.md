@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="herdr-scp-explorer.png" alt="herdr SCP Explorer" width="720">
+</p>
+
 # SCP Explorer (herdr plugin)
 
 > A MobaXterm-style SCP file explorer for the SSH session in your current herdr
