@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="herdr-scp-plugin-icon-transparent.png" alt="herdr SCP Explorer" width="240">
+  <img src="herdr-scp-plugin-icon-transparent.png" alt="herdr SCP Explorer" width="480">
 </p>
 
 # SCP Explorer (herdr plugin)
