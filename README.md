@@ -23,7 +23,7 @@
 ### From the herdr plugin library (recommended)
 
 ```bash
-herdr plugin install <owner>/scp-explorer --yes
+herdr plugin install TinocoAI/scp-explorer --yes
 herdr plugin list            # confirm "scp-explorer" is active
 ```
 
