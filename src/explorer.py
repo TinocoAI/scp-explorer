@@ -1096,8 +1096,8 @@ def main(stdscr):
         top_idx = 0
         if clear_marks:
             marks = set()
-        dir_sizes = {}      # fresh cache per directory
-        du_running = False
+        dir_sizes.clear()      # fresh cache per directory (mutate, not rebind)
+        du_running = False       # allow a new probe after navigation
         if err == "PASSWORD":
             need_pw = True
             msg_line = "auth needs password — press P (or it will prompt)"
@@ -1106,18 +1106,21 @@ def main(stdscr):
         else:
             msg_line = ""
         log("reload", cur, "entries", len(entries), "err", err)
-        # Kick off an async du probe for dirs whose size ls reported as 0
-        # (BSD/macOS or FS without block allocation info). The probe fills
-        # dir_sizes as results arrive; draw() shows "..." until then.
-        zero_dirs = [e["name"] for e in entries
-                     if e["type"] == "d" and e["size"] == 0]
-        if zero_dirs and err is None and not du_running:
+        # Kick off an async du probe for ALL directories. On Linux/ext4,
+        # `ls -la` reports the inode block size (4096) for dirs, which is
+        # not the actual on-disk usage — we always want du's recursive total.
+        # This runs in a background thread so the listing appears instantly.
+        dir_names = [e["name"] for e in entries if e["type"] == "d"]
+        if dir_names and err is None and not du_running:
             du_running = True
             import threading
-            t = threading.Thread(
-                target=_async_du_probe,
-                args=(remote, cur, zero_dirs, dir_sizes),
-                daemon=True)
+
+            def _wrap():
+                _async_du_probe(remote, cur, dir_names, dir_sizes)
+                nonlocal du_running
+                du_running = False
+
+            t = threading.Thread(target=_wrap, daemon=True)
             t.start()
 
     def activate_selected():
@@ -1186,12 +1189,16 @@ def main(stdscr):
                 icon = "*"
             # Size goes at the END of the line, right-aligned to the pane
             # width so it stays put on resize. Truncate the name if needed.
-            # For dirs whose ls size was 0, check the async du cache; show
-            # a "..." placeholder until resolved (or permanently if du fails).
+            # For dirs, prefer the async du result (real recursive size).
+            # While du is running, show "..."; if du failed, fall back to
+            # the ls-reported block size (4096 on Linux). Files/symlinks
+            # use ls directly.
             if e["type"] == "d" and e["name"] in dir_sizes:
                 real = dir_sizes[e["name"]]
+            elif e["type"] == "d" and du_running:
+                real = None  # still resolving -> "..." below
             elif e["type"] == "d" and e["size"] > 0:
-                real = e["size"]            # GNU/Linux: ls already gave block size
+                real = e["size"]
             elif e["type"] in ("f", "l"):
                 real = e["size"]
             else:
