@@ -362,7 +362,7 @@ class Remote:
         if path == "~":
             cd_arg = "~"
         elif path.startswith("~/"):
-            cd_arg = "~" + self.quote_path(path[2:])
+            cd_arg = "~/" + self.quote_path(path[2:])
         else:
             cd_arg = self.quote_path(path)
         # No `2>/dev/null` on the cd so a bad path surfaces as an error.
