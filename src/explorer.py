@@ -1191,7 +1191,10 @@ def main(stdscr):
         except curses.error:
             pass
         top = 2
-        for i in range(top, h - 2):
+        # The list occupies rows 2..h-3, leaving h-2 for the Total line and
+        # h-1 for the status/hint/footer line.
+        list_bottom = max(top, h - 3)  # never clobber the Total line
+        for i in range(top, list_bottom + 1):
             idx = i - top + top_idx
             if idx >= len(entries):
                 break
@@ -1209,9 +1212,9 @@ def main(stdscr):
             if e["type"] == "d" and e["name"] in dir_sizes:
                 real = dir_sizes[e["name"]]
             elif e["type"] == "d" and du_running:
-                real = None  # still resolving -> "..." below
+                real = None  # still resolving via du -> "..." below
             elif e["type"] == "d" and e["size"] > 0:
-                real = e["size"]
+                real = e["size"]  # du failed/not run, use ls block size
             elif e["type"] in ("f", "l"):
                 real = e["size"]
             else:
@@ -1240,6 +1243,34 @@ def main(stdscr):
                 stdscr.addstr(i, 0, line[:w - 1], attr)
             except curses.error:
                 pass
+        # --- Total line (h-2), just above the footer ---
+        # Sum every visible entry's resolved size.
+        total_bytes = 0
+        unresolved = 0
+        for e in entries:
+            real = None
+            if e["type"] == "d":
+                if e["name"] in dir_sizes:
+                    real = dir_sizes[e["name"]]
+                elif du_running:
+                    unresolved += 1
+                elif e["size"] > 0:
+                    real = e["size"]
+            elif e["type"] in ("f", "l"):
+                real = e["size"]
+            if real:
+                total_bytes += real
+        if in_bulk and marks:
+            total_line = "  %d marked" % len(marks)
+        elif unresolved and du_running:
+            total_line = "Total: %s (+%d computing)" % (fmt_size(total_bytes), unresolved)
+        else:
+            total_line = "Total: %s" % fmt_size(total_bytes)
+        try:
+            stdscr.addstr(h - 2, 0, total_line[:w - 1], curses.A_REVERSE)
+        except curses.error:
+            pass
+        # --- Footer (h-1): status/hint ---
         if msg_line:
             try:
                 stdscr.addstr(h - 1, 0, msg_line[:w - 1], curses.A_BOLD)
@@ -1251,23 +1282,7 @@ def main(stdscr):
                         "f follow · r refresh · c get · p push · P pw · "
                         "space=select · mouse: click=sel, 2x=open · q quit")
                 bulk_hint = "BULK: space=mark/unmark · c=get all · Esc=cancel"
-                base_hint = bulk_hint if in_bulk else hint
-                # Sum visible sizes for a Total line at the bottom-right.
-                total_bytes = 0
-                for e in entries:
-                    real = None
-                    if e["type"] == "d" and e["name"] in dir_sizes:
-                        real = dir_sizes[e["name"]]
-                    elif e["type"] == "d" and e["size"] > 0:
-                        real = e["size"]
-                    elif e["type"] in ("f", "l"):
-                        real = e["size"]
-                    if real:
-                        total_bytes += real
-                total_str = "Total: %s" % fmt_size(total_bytes)
-                pad = max(1, w - 1 - len(base_hint) - len(total_str))
-                footer = base_hint + " " * pad + total_str
-                stdscr.addstr(h - 1, 0, footer[:w - 1])
+                stdscr.addstr(h - 1, 0, (bulk_hint if in_bulk else hint)[:w - 1])
             except curses.error:
                 pass
         stdscr.refresh()
