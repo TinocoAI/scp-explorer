@@ -991,29 +991,35 @@ def local_picker(stdscr, mode, start=None):
 
 
 def _async_du_probe(remote, path, names, sink):
-    """Background: resolve directory sizes via a single batched du -sk.
+    """Background: resolve directory sizes via batched du -sk.
+
+    Each name is probed in its own subprocess so results arrive
+    incrementally (a single huge du over N dirs blocks until ALL are
+    done). Each subprocess is short-lived per-dir, so small dirs resolve
+    fast and large ones keep churning in parallel threads.
+
     Writes results into the shared `sink` dict (name -> bytes). Safe for
     curses because the main thread only READS sink in draw(); we never
     touch stdscr here."""
     if not names:
         return
-    names_quoted = " ".join(remote.quote_path(n) for n in names)
     if path == "~":
         cd_arg = "~"
     elif path.startswith("~/"):
         cd_arg = "~/" + remote.quote_path(path[2:])
     else:
         cd_arg = remote.quote_path(path)
-    cmd = "cd %s && du -sk %s" % (cd_arg, names_quoted)
-    try:
-        r = remote.run(cmd)
-    except Exception as ex:
-        log("du probe failed:", repr(ex))
-        return
-    if r.returncode != 0:
-        log("du probe rc!=0:", r.stderr.strip()[:200])
-        return
-    for line in r.stdout.splitlines():
+    cmd_prefix = "cd %s && du -sk " % cd_arg
+    for name in names:
+        cmd = cmd_prefix + remote.quote_path(name)
+        try:
+            r = remote.run(cmd)
+        except Exception as ex:
+            log("du probe failed for", name, repr(ex))
+            continue
+        if r.returncode != 0 or not r.stdout:
+            continue
+        line = r.stdout.splitlines()[-1]  # last line = total for this dir
         parts = line.split(None, 1)
         if len(parts) != 2:
             continue
@@ -1110,12 +1116,19 @@ def main(stdscr):
         # `ls -la` reports the inode block size (4096) for dirs, which is
         # not the actual on-disk usage — we always want du's recursive total.
         # This runs in a background thread so the listing appears instantly.
-        dir_names = [e["name"] for e in entries if e["type"] == "d"]
+        # Probe at most 20 directories per listing (viewport-sized). Probing
+        # dozens of huge dirs at once starves the SSH socket and the sizes
+        # never resolve. Small dirs finish fast; if the user scrolls to more,
+        # the follow-mode 400ms poll will reload and probe the next batch.
+        dir_names = [e["name"] for e in entries if e["type"] == "d"][:20]
         if dir_names and err is None and not du_running:
             du_running = True
             import threading
 
             def _wrap():
+                # Probe one dir at a time within a single thread. Small dirs
+                # resolve fast (appear in dir_sizes immediately); large dirs
+                # keep churning but don't block the small ones ahead of them.
                 _async_du_probe(remote, cur, dir_names, dir_sizes)
                 nonlocal du_running
                 du_running = False
