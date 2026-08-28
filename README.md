@@ -17,6 +17,12 @@
 - **Transfers with progress** — `c` (get) / `p` (push) show a real progress bar
   (single files via `pv`, directories via `scp -r` with a smooth ramp).
 - **Follow mode** — when opened from an SSH pane, it tracks that pane's `cd`.
+- **Directory sizes (async)** — file and directory sizes are shown right-aligned
+  in each row; directories are measured in the background (batched `du -sk`)
+  so the listing appears instantly and sizes fill in as they resolve. A
+  `Total:` line at the bottom accumulates the visible sizes.
+- **Bulk select** — press `Space` to mark multiple entries, then `c` to download
+  them all at once into a single destination directory.
 
 ## Installing
 

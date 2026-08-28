@@ -378,7 +378,6 @@ class Remote:
                 return [], "No such directory: %s" % path
             return [], err
         entries = []
-        dir_names = []
         for line in r.stdout.splitlines():
             # perms links owner group size date name  (name may contain spaces,
             # so split into at most 7 tokens: 6 metadata fields + full name).
@@ -397,7 +396,6 @@ class Remote:
                 size = 0
             if perms.startswith("d"):
                 typ = "d"
-                dir_names.append(name)
             elif perms.startswith("l"):
                 typ = "l"
                 if " -> " in name:
@@ -405,40 +403,10 @@ class Remote:
             else:
                 typ = "f"
             entries.append({"name": name, "type": typ, "size": size})
-        # Fill in directory sizes that ls reported as 0, via a single batch
-        # `du -sb`. We only do this if there's at least one dir with size 0.
-        zero_dirs = [n for n in dir_names
-                     if not any(e["name"] == n and e["size"] > 0
-                                for e in entries)]
-        if zero_dirs:
-            self._fill_dir_sizes(path, cd_arg, zero_dirs, entries)
         # ".." to go up one level (not produced by ls in a normal dir).
         entries.insert(0, {"name": "..", "type": "up", "size": 0})
         order = {"up": 0, "d": 1, "l": 2, "f": 3}
         entries.sort(key=lambda e: (order.get(e["type"], 9), e["name"].lower()))
-        return entries, None
-
-    def _fill_dir_sizes(self, path, cd_arg, zero_dirs, entries):
-        """Run a single `du -sk` over the directory's entries to fill in
-        sizes for dirs whose `ls` size came back as 0 (BSD/macOS)."""
-        names_quoted = " ".join(self.quote_path(n) for n in zero_dirs)
-        cmd = f"cd {cd_arg} && du -sk {names_quoted}"
-        r = self.run(cmd)
-        if r.returncode != 0 or not r.stdout:
-            return
-        for line in r.stdout.splitlines():
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            try:
-                total = int(parts[0]) * 1024  # du -sk reports 1K-blocks
-            except ValueError:
-                continue
-            dname = parts[1].rstrip("/")
-            base = os.path.basename(dname)
-            for e in entries:
-                if e["type"] == "d" and e["name"] == base and e["size"] == 0:
-                    e["size"] = total
         return entries, None
 
     def read_file(self, path):
