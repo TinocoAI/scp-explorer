@@ -33,7 +33,7 @@
 ### From the herdr plugin library (recommended)
 
 ```bash
-herdr plugin install TinocoAI/scp-explorer --yes
+herdr plugin install <owner>/scp-explorer --yes
 herdr plugin list            # confirm "scp-explorer" is active
 ```
 
@@ -133,9 +133,12 @@ explorer never gets reverted by follow.
 
 ## Troubleshooting
 
-- The explorer writes a diagnostic log to `/tmp/scp-explorer.log` on every run
-  (detected target, first listing result). If something looks wrong, open a
-  normal pane and `cat /tmp/scp-explorer.log` and share it.
+- The explorer writes a diagnostic log to `$HERDR_PLUGIN_STATE_DIR/scp-explorer.log`
+  (or `~/.config/herdr/plugins/state/scp-explorer/scp-explorer.log` when run
+  outside Herdr) on every run (detected target, first listing result). If
+  something looks wrong, open a normal pane and check that file. You can also
+  enable mouse-event debugging with `HERDR_SCP_MOUSE_DEBUG=1` before opening the
+  explorer, which appends raw button states to `scp-explorer-mouse.log`.
 - "Connecting to <host> ..." shows while the first SSH handshake is in flight;
   the first connect can take a few seconds, later ones are instant (multiplex).
 - Requires SSH key OR password auth to the remote. Password auth needs sshpass
