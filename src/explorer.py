@@ -354,9 +354,11 @@ class Remote:
         return subprocess.run(args, capture_output=True, text=True, timeout=60)
 
     def list_dir(self, path):
-        # Use `ls -la` — a single fast pass. The previous approach ran `du -ks`
-        # on every subdirectory, which is recursive and times out on big homes
-        # (e.g. root's home with multi-GB dirs). `ls -la` is instant.
+        # A single fast `ls -la` pass. On GNU/Linux the size field for a
+        # directory is usually non-zero (block allocation), which we display.
+        # On systems where it comes back as 0 (BSD/macOS), we fill it with a
+        # batched `du -sk` afterwards — one subprocess, not one per entry, so
+        # large directories don't timeout the way the old per-entry du did.
         # NOTE: `~` must NOT be quoted — the shell only expands a bare tilde,
         # not a quoted one. So we keep `~` unquoted and quote the rest.
         if path == "~":
@@ -366,7 +368,7 @@ class Remote:
         else:
             cd_arg = self.quote_path(path)
         # No `2>/dev/null` on the cd so a bad path surfaces as an error.
-        cmd = f"cd {cd_arg} && ls -la --time-style=+%s"
+        cmd = f"cd {cd_arg} && ls -la --time-style=+%s 2>/dev/null || ls -la"
         r = self.run(cmd)
         if r.returncode != 0:
             err = (r.stderr or "").strip() or "remote listing failed"
@@ -376,6 +378,7 @@ class Remote:
                 return [], "No such directory: %s" % path
             return [], err
         entries = []
+        dir_names = []
         for line in r.stdout.splitlines():
             # perms links owner group size date name  (name may contain spaces,
             # so split into at most 7 tokens: 6 metadata fields + full name).
@@ -388,9 +391,13 @@ class Remote:
             if name in (".", ".."):  # skip self / parent; we add ".." ourselves
                 continue
             perms = parts[0]
-            size = int(parts[4] or 0)
+            try:
+                size = int(parts[4] or 0)
+            except ValueError:
+                size = 0
             if perms.startswith("d"):
                 typ = "d"
+                dir_names.append(name)
             elif perms.startswith("l"):
                 typ = "l"
                 if " -> " in name:
@@ -398,10 +405,40 @@ class Remote:
             else:
                 typ = "f"
             entries.append({"name": name, "type": typ, "size": size})
+        # Fill in directory sizes that ls reported as 0, via a single batch
+        # `du -sb`. We only do this if there's at least one dir with size 0.
+        zero_dirs = [n for n in dir_names
+                     if not any(e["name"] == n and e["size"] > 0
+                                for e in entries)]
+        if zero_dirs:
+            self._fill_dir_sizes(path, cd_arg, zero_dirs, entries)
         # ".." to go up one level (not produced by ls in a normal dir).
         entries.insert(0, {"name": "..", "type": "up", "size": 0})
         order = {"up": 0, "d": 1, "l": 2, "f": 3}
         entries.sort(key=lambda e: (order.get(e["type"], 9), e["name"].lower()))
+        return entries, None
+
+    def _fill_dir_sizes(self, path, cd_arg, zero_dirs, entries):
+        """Run a single `du -sk` over the directory's entries to fill in
+        sizes for dirs whose `ls` size came back as 0 (BSD/macOS)."""
+        names_quoted = " ".join(self.quote_path(n) for n in zero_dirs)
+        cmd = f"cd {cd_arg} && du -sk {names_quoted}"
+        r = self.run(cmd)
+        if r.returncode != 0 or not r.stdout:
+            return
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            try:
+                total = int(parts[0]) * 1024  # du -sk reports 1K-blocks
+            except ValueError:
+                continue
+            dname = parts[1].rstrip("/")
+            base = os.path.basename(dname)
+            for e in entries:
+                if e["type"] == "d" and e["name"] == base and e["size"] == 0:
+                    e["size"] = total
         return entries, None
 
     def read_file(self, path):
@@ -865,13 +902,18 @@ def local_picker(stdscr, mode, start=None):
         except curses.error:
             pass
         top = 2
+        # Align size column widths in the local picker too.
+        lsize_strs = [fmt_size(e["size"]) for e in lentries
+                      if e["type"] in ("d", "f", "l")] or ["0"]
+        lsize_w = max(len(s) for s in lsize_strs)
         for i in range(top, h - 1):
             idx = i - top + ltop
             if idx >= len(lentries):
                 break
             e = lentries[idx]
             icon = {"up": "..", "d": "▸", "l": "→", "f": " "}.get(e["type"], " ")
-            size = "" if e["type"] in ("d", "up") else fmt_size(e["size"])
+            size = fmt_size(e["size"]) if e["type"] in ("d", "f", "l") else ""
+            size = size.rjust(lsize_w)
             line = " %s %s  %s" % (icon, e["name"], size)
             attr = curses.A_REVERSE if idx == lsel else curses.A_NORMAL
             try:
@@ -1110,6 +1152,10 @@ def main(stdscr):
         except curses.error:
             pass
         top = 2
+        # Compute the rendered size-column width so all rows align.
+        size_strs = [fmt_size(e["size"]) for e in entries
+                     if e["type"] in ("d", "f", "l")] or ["0"]
+        size_w = max(len(s) for s in size_strs)
         for i in range(top, h - 2):
             idx = i - top + top_idx
             if idx >= len(entries):
@@ -1119,7 +1165,8 @@ def main(stdscr):
             icon = {"up": "..", "d": "▸", "l": "→", "f": " "}.get(e["type"], " ")
             if marked:
                 icon = "*"
-            size = "" if e["type"] in ("d", "up") else fmt_size(e["size"])
+            size = fmt_size(e["size"]) if e["type"] in ("d", "f", "l") else ""
+            size = size.rjust(size_w)
             line = " %s %s  %s" % (icon, e["name"], size)
             if marked:
                 attr = curses.A_REVERSE | curses.A_BOLD
