@@ -902,19 +902,22 @@ def local_picker(stdscr, mode, start=None):
         except curses.error:
             pass
         top = 2
-        # Align size column widths in the local picker too.
-        lsize_strs = [fmt_size(e["size"]) for e in lentries
-                      if e["type"] in ("d", "f", "l")] or ["0"]
-        lsize_w = max(len(s) for s in lsize_strs)
         for i in range(top, h - 1):
             idx = i - top + ltop
             if idx >= len(lentries):
                 break
             e = lentries[idx]
             icon = {"up": "..", "d": "▸", "l": "→", "f": " "}.get(e["type"], " ")
-            size = fmt_size(e["size"]) if e["type"] in ("d", "f", "l") else ""
-            size = size.rjust(lsize_w)
-            line = " %s %s  %s" % (icon, e["name"], size)
+            if e["type"] in ("d", "f", "l"):
+                sz = fmt_size(e["size"])
+            else:
+                sz = ""
+            name_part = " %s %s" % (icon, e["name"])
+            avail = max(len(name_part) + 1, w - 1 - len(sz) - 2)
+            name_part = name_part[:avail]
+            line = name_part + " " * (avail - len(name_part)) + sz
+            if len(line) > w - 1:
+                line = line[:w - 1]
             attr = curses.A_REVERSE if idx == lsel else curses.A_NORMAL
             try:
                 stdscr.addstr(i, 0, line[:w - 1], attr)
@@ -1152,10 +1155,6 @@ def main(stdscr):
         except curses.error:
             pass
         top = 2
-        # Compute the rendered size-column width so all rows align.
-        size_strs = [fmt_size(e["size"]) for e in entries
-                     if e["type"] in ("d", "f", "l")] or ["0"]
-        size_w = max(len(s) for s in size_strs)
         for i in range(top, h - 2):
             idx = i - top + top_idx
             if idx >= len(entries):
@@ -1165,9 +1164,20 @@ def main(stdscr):
             icon = {"up": "..", "d": "▸", "l": "→", "f": " "}.get(e["type"], " ")
             if marked:
                 icon = "*"
-            size = fmt_size(e["size"]) if e["type"] in ("d", "f", "l") else ""
-            size = size.rjust(size_w)
-            line = " %s %s  %s" % (icon, e["name"], size)
+            # Size goes at the END of the line, right-aligned to the pane
+            # width so it stays put on resize. Truncate the name if needed.
+            if e["type"] in ("d", "f", "l"):
+                sz = fmt_size(e["size"])
+            else:
+                sz = ""
+            name_part = " %s %s" % (icon, e["name"])
+            # Leave room for the size + 2 spaces of padding, clamp to pane width.
+            avail = max(len(name_part) + 1, w - 1 - len(sz) - 2)
+            name_part = name_part[:avail]
+            # Pad the name to fill the gap so the size hugs the right edge.
+            line = name_part + " " * (avail - len(name_part)) + sz
+            if len(line) > w - 1:
+                line = line[:w - 1]
             if marked:
                 attr = curses.A_REVERSE | curses.A_BOLD
             elif idx == sel:
