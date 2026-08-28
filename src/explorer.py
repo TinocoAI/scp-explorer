@@ -1140,8 +1140,8 @@ def main(stdscr):
             try:
                 hint = ("↑↓ nav · Enter cd/open · ← up · / path · g home · "
                         "f follow · r refresh · c get · p push · P pw · "
-                        "mouse: click=sel, 2x=open · q quit")
-                bulk_hint = "BULK: space=mark/unmark · c=get all · Esc=cancel bulk"
+                        "space=select · mouse: click=sel, 2x=open · q quit")
+                bulk_hint = "BULK: space=mark/unmark · c=get all · Esc=cancel"
                 stdscr.addstr(h - 1, 0, (bulk_hint if in_bulk else hint)[:w - 1])
             except curses.error:
                 pass
@@ -1267,23 +1267,10 @@ def main(stdscr):
             reload()
         elif ch == ord('r'):
             reload()
-        elif ch == ord('M'):
-            # Toggle bulk-select mode. In normal mode, also pre-mark the
-            # currently-highlighted entry so a quick <space> starts from here.
-            in_bulk = not in_bulk
-            if in_bulk and marks:
-                pass  # preserve existing marks when re-entering
-            elif in_bulk:
-                if entries and sel < len(entries) and entries[sel]["type"] != "up":
-                    marks.add(entries[sel]["name"])
-            else:
-                marks = set()
-            msg_line = "bulk %s (%d marked)" % (
-                "ON" if in_bulk else "OFF", len(marks))
         elif ch == ord(' '):
-            # space: toggle mark on current entry. In normal mode, this also
-            # enters bulk mode (so the workflow is: navigate, space to mark,
-            # navigate more, c to grab all).
+            # space: toggle mark on current entry. This ALWAYS enters bulk
+            # mode when the first item is marked, and exits it when the last
+            # is unmarked. No separate "enter bulk mode" key needed.
             if not entries or sel >= len(entries):
                 continue
             e = entries[sel]
@@ -1293,15 +1280,13 @@ def main(stdscr):
                 marks.discard(e["name"])
             else:
                 marks.add(e["name"])
-            if not in_bulk and marks:
+            # Stay in bulk as long as there's at least one mark; leave it
+            # when the selection becomes empty.
+            if marks:
                 in_bulk = True
-            elif in_bulk and not marks:
+            else:
                 in_bulk = False
             msg_line = "marked %d" % len(marks)
-            if in_bulk:
-                msg_line += " (bulk ON)"
-            elif not marks:
-                msg_line = "no marks"
         elif ch == ord('f'):
             follow = not follow
             last_follow_cwd = None  # re-arm follow detection after a toggle
