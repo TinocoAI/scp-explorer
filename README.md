@@ -75,13 +75,31 @@ Left / h ................. go up one directory
 g ........................ go to ~
 / ........................ jump to an absolute remote path
 f ........................ toggle follow-mode (track the SSH pane's cd)
+M ........................ enter/exit bulk-select mode
+Space .................... (in bulk mode) mark/unmark the current entry
 c ........................ get file/dir from remote -> local picker
+                             (in bulk mode) download all marked entries
 p ........................ push local file -> remote (local picker)
 r ........................ refresh
 P ........................ set/change SSH password (stored in memory only)
 q / Esc .................. close
 Mouse: click selects, 2nd click opens; wheel scrolls (never opens a folder).
 ```
+
+### Bulk select (download multiple files at once)
+
+1. Press `M` to enter bulk-select mode (the header shows `BULK:n`).
+2. Navigate with Up/Down and press `Space` to toggle a mark on the highlighted
+   entry (marked entries show a `*` icon and are highlighted).
+3. Navigate and mark as many entries as you like.
+4. Press `c` to download **all marked entries** — you'll be prompted for a
+   destination directory, then each file/dir transfers in turn with a shared
+   progress bar. Press `Esc` or `q` to cancel without downloading.
+5. Press `Esc` or `q` (with no marks) to exit bulk mode without transferring.
+
+You can also press `Space` while **not** in bulk mode: it marks the current
+entry and enters bulk mode in one keystroke, so the quickest workflow is
+`navigate → Space → navigate → Space → c`.
 
 ### Local file picker (used by c / p)
 

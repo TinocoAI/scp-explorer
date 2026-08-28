@@ -334,8 +334,7 @@ class Remote:
         return None
 
     def local_copy(self, remote_path, local_path):
-        args = self._scp_base_args()[:]  # copy (no -r here; single file)
-        args.remove("-r")
+        args = [a for a in self._scp_base_args() if a != "-r"]
         if self.password:
             args = ["sshpass", "-e"] + args
         args += ["%s:%s" % (self.target, self.quote_path(remote_path)), local_path]
@@ -345,8 +344,7 @@ class Remote:
         return subprocess.run(args, capture_output=True, text=True, timeout=60)
 
     def push(self, local_path, remote_path):
-        args = self._scp_base_args()[:]
-        args.remove("-r")
+        args = [a for a in self._scp_base_args() if a != "-r"]
         if self.password:
             args = ["sshpass", "-e"] + args
         args += [local_path, "%s:%s" % (self.target, self.quote_path(remote_path))]
@@ -634,11 +632,6 @@ def _ramp(elapsed):
     return min(0.98, elapsed / 8.0)
 
 
-def _eta_guess(total):
-    # rough divisor so the ramp spans a believable window for big copies
-    return max(2.0, total / (200 * 1024))
-
-
 def do_push(remote, local_path, remote_path, stdscr, on_progress):
     """Upload local_path -> remote_path (file or directory). Mirrors do_get."""
     name = os.path.basename(local_path.rstrip("/")) or local_path
@@ -694,6 +687,38 @@ def do_push(remote, local_path, remote_path, stdscr, on_progress):
     if rc == 0:
         return True, "pushed %s -> %s" % (name, human(remote_path))
     return False, "ERR: push failed (rc=%d)" % rc
+
+
+def do_bulk_get(remote, names, cur, local_dir, stdscr, on_progress):
+    """Download several remote entries from `cur` into local `local_dir`.
+
+    Transfers them one at a time (reusing the multiplexed SSH session), updating
+    a single progress bar so the bottom line reflects the running total.
+    Returns (ok, message)."""
+    ok_count = 0
+    fail_count = 0
+    total_files = len(names)
+    overall = Progress(None)  # unknown total across mixed file/dir sizes
+    idx = 0
+    for name in names:
+        idx += 1
+        rpath = os.path.join(cur, name)
+        lpath = os.path.join(local_dir, name)
+        label = "get %s (%d/%d)" % (name, idx, total_files)
+        on_progress(label, overall)
+        try:
+            ok, res = do_get(remote, rpath, lpath, stdscr, on_progress)
+        except Exception as ex:
+            log("BULK GET error", name, repr(ex))
+            ok, res = False, "ERR: %s" % ex
+        if ok:
+            ok_count += 1
+        else:
+            fail_count += 1
+        log("BULK GET", name, ok, res)
+    if ok_count == total_files:
+        return True, "got %d/%d files -> %s" % (ok_count, total_files, human(local_dir))
+    return False, "got %d/%d (failures: %d) -> %s" % (ok_count, total_files, fail_count, human(local_dir))
 
 
 def prompt_str(stdscr, label, default="", secret=False):
@@ -1009,14 +1034,18 @@ def main(stdscr):
     sel = 0
     top_idx = 0  # first visible entry (viewport scroll offset)
     msg_line = "Connecting to %s ..." % remote.target
+    marks = set()       # set of entry names (relative to cur) marked in bulk mode
+    in_bulk = False     # bulk-select mode: space toggles marks, c downloads
 
     need_pw = False
 
-    def reload():
-        nonlocal entries, err, sel, need_pw, msg_line, top_idx
+    def reload(clear_marks=True):
+        nonlocal entries, err, sel, need_pw, msg_line, top_idx, marks
         entries, err = remote.list_dir(cur)
         sel = 0
         top_idx = 0
+        if clear_marks:
+            marks = set()
         if err == "PASSWORD":
             need_pw = True
             msg_line = "auth needs password — press P (or it will prompt)"
@@ -1071,10 +1100,11 @@ def main(stdscr):
     def draw():
         h, w = stdscr.getmaxyx()
         stdscr.erase()
-        header = " SCP: %s  [%s]%s%s" % (
+        header = " SCP: %s  [%s]%s%s%s" % (
             remote.target, human(cur),
             "  *password*" if remote.password else "",
-            "  [follow]" if follow else "")
+            "  [follow]" if follow else "",
+            "  (BULK:%d)" % len(marks) if in_bulk else "")
         try:
             stdscr.addstr(0, 0, header[:w - 1], curses.A_REVERSE)
         except curses.error:
@@ -1085,10 +1115,18 @@ def main(stdscr):
             if idx >= len(entries):
                 break
             e = entries[idx]
+            marked = e["name"] in marks
             icon = {"up": "..", "d": "▸", "l": "→", "f": " "}.get(e["type"], " ")
+            if marked:
+                icon = "*"
             size = "" if e["type"] in ("d", "up") else fmt_size(e["size"])
             line = " %s %s  %s" % (icon, e["name"], size)
-            attr = curses.A_REVERSE if idx == sel else curses.A_NORMAL
+            if marked:
+                attr = curses.A_REVERSE | curses.A_BOLD
+            elif idx == sel:
+                attr = curses.A_REVERSE
+            else:
+                attr = curses.A_NORMAL
             try:
                 stdscr.addstr(i, 0, line[:w - 1], attr)
             except curses.error:
@@ -1100,8 +1138,11 @@ def main(stdscr):
                 pass
         else:
             try:
-                stdscr.addstr(h - 1, 0, ("↑↓ nav · Enter cd/open · ← up · / path · g home · "
-                                         "f follow · r refresh · c get · p push · P pw · mouse: click=sel, 2x=open · q quit")[:w - 1])
+                hint = ("↑↓ nav · Enter cd/open · ← up · / path · g home · "
+                        "f follow · r refresh · c get · p push · P pw · "
+                        "mouse: click=sel, 2x=open · q quit")
+                bulk_hint = "BULK: space=mark/unmark · c=get all · Esc=cancel bulk"
+                stdscr.addstr(h - 1, 0, (bulk_hint if in_bulk else hint)[:w - 1])
             except curses.error:
                 pass
         stdscr.refresh()
@@ -1197,6 +1238,12 @@ def main(stdscr):
             # clicks outside the listing area (e.g. header) are ignored
             continue
         if ch in (ord('q'), 27):
+            if in_bulk:
+                # Esc/q in bulk mode just exits bulk, doesn't quit the explorer
+                in_bulk = False
+                marks = set()
+                msg_line = "bulk cancelled"
+                continue
             break
         elif ch in (curses.KEY_DOWN, ord('j')):
             if sel < len(entries) - 1:
@@ -1220,6 +1267,41 @@ def main(stdscr):
             reload()
         elif ch == ord('r'):
             reload()
+        elif ch == ord('M'):
+            # Toggle bulk-select mode. In normal mode, also pre-mark the
+            # currently-highlighted entry so a quick <space> starts from here.
+            in_bulk = not in_bulk
+            if in_bulk and marks:
+                pass  # preserve existing marks when re-entering
+            elif in_bulk:
+                if entries and sel < len(entries) and entries[sel]["type"] != "up":
+                    marks.add(entries[sel]["name"])
+            else:
+                marks = set()
+            msg_line = "bulk %s (%d marked)" % (
+                "ON" if in_bulk else "OFF", len(marks))
+        elif ch == ord(' '):
+            # space: toggle mark on current entry. In normal mode, this also
+            # enters bulk mode (so the workflow is: navigate, space to mark,
+            # navigate more, c to grab all).
+            if not entries or sel >= len(entries):
+                continue
+            e = entries[sel]
+            if e["type"] == "up":
+                continue
+            if e["name"] in marks:
+                marks.discard(e["name"])
+            else:
+                marks.add(e["name"])
+            if not in_bulk and marks:
+                in_bulk = True
+            elif in_bulk and not marks:
+                in_bulk = False
+            msg_line = "marked %d" % len(marks)
+            if in_bulk:
+                msg_line += " (bulk ON)"
+            elif not marks:
+                msg_line = "no marks"
         elif ch == ord('f'):
             follow = not follow
             last_follow_cwd = None  # re-arm follow detection after a toggle
@@ -1237,6 +1319,32 @@ def main(stdscr):
             if err == "PASSWORD":
                 msg_line = "still needs password"
         elif ch == ord('c'):
+            # In bulk mode: download all marked entries.
+            if in_bulk and marks:
+                names = sorted(marks)
+                dest = local_picker(stdscr, "dir", start=os.path.expanduser("~"))
+                if dest:
+                    def _bulk_cb(label, prog):
+                        draw_progress(stdscr, label, prog)
+                    try:
+                        ok, res = do_bulk_get(
+                            remote, names, cur, dest, stdscr, _bulk_cb)
+                    except Exception as ex:
+                        log("BULK error", repr(ex))
+                        ok, res = False, "ERR: %s" % ex
+                    reload()
+                    marks = set()
+                    in_bulk = False
+                    if ok:
+                        msg_line = res
+                    elif "PASSWORD" in res:
+                        msg_line = "auth error — press P to set password"
+                    else:
+                        msg_line = res
+                else:
+                    msg_line = "bulk download cancelled"
+                continue
+            # Normal mode: single-file download.
             if not entries or sel >= len(entries) or entries[sel]["type"] == "up":
                 continue
             e = entries[sel]
@@ -1254,7 +1362,7 @@ def main(stdscr):
                     ok, res = False, "ERR: %s" % ex
                 reload()
                 if ok:
-                    msg_line = "%s Downloaded Successfuly" % e["name"]
+                    msg_line = "%s downloaded successfully" % e["name"]
                 elif "PASSWORD" in res:
                     msg_line = "auth error — press P to set password"
                 else:
@@ -1272,7 +1380,7 @@ def main(stdscr):
                     ok, res = False, "ERR: %s" % ex
                 reload()
                 if ok:
-                    msg_line = "%s Uploaded Successfuly" % os.path.basename(src)
+                    msg_line = "%s uploaded successfully" % os.path.basename(src)
                 elif "PASSWORD" in res:
                     msg_line = "auth error — press P to set password"
                 else:
