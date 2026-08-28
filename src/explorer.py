@@ -1022,6 +1022,41 @@ def local_picker(stdscr, mode, start=None):
     return None
 
 
+def _async_du_probe(remote, path, names, sink):
+    """Background: resolve directory sizes via a single batched du -sk.
+    Writes results into the shared `sink` dict (name -> bytes). Safe for
+    curses because the main thread only READS sink in draw(); we never
+    touch stdscr here."""
+    if not names:
+        return
+    names_quoted = " ".join(remote.quote_path(n) for n in names)
+    if path == "~":
+        cd_arg = "~"
+    elif path.startswith("~/"):
+        cd_arg = "~/" + remote.quote_path(path[2:])
+    else:
+        cd_arg = remote.quote_path(path)
+    cmd = "cd %s && du -sk %s" % (cd_arg, names_quoted)
+    try:
+        r = remote.run(cmd)
+    except Exception as ex:
+        log("du probe failed:", repr(ex))
+        return
+    if r.returncode != 0:
+        log("du probe rc!=0:", r.stderr.strip()[:200])
+        return
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            total = int(parts[0]) * 1024  # du -sk -> 1K blocks
+        except ValueError:
+            continue
+        base = os.path.basename(parts[1].rstrip("/"))
+        sink[base] = total
+
+
 def main(stdscr):
     curses.curs_set(0)
     stdscr.keypad(True)
@@ -1081,16 +1116,20 @@ def main(stdscr):
     msg_line = "Connecting to %s ..." % remote.target
     marks = set()       # set of entry names (relative to cur) marked in bulk mode
     in_bulk = False     # bulk-select mode: space toggles marks, c downloads
+    dir_sizes = {}      # {name: bytes} resolved async via du for dirs
+    du_running = False  # guard: only one du probe at a time per listing
 
     need_pw = False
 
     def reload(clear_marks=True):
-        nonlocal entries, err, sel, need_pw, msg_line, top_idx, marks
+        nonlocal entries, err, sel, need_pw, msg_line, top_idx, marks, dir_sizes, du_running
         entries, err = remote.list_dir(cur)
         sel = 0
         top_idx = 0
         if clear_marks:
             marks = set()
+        dir_sizes = {}      # fresh cache per directory
+        du_running = False
         if err == "PASSWORD":
             need_pw = True
             msg_line = "auth needs password — press P (or it will prompt)"
@@ -1099,6 +1138,19 @@ def main(stdscr):
         else:
             msg_line = ""
         log("reload", cur, "entries", len(entries), "err", err)
+        # Kick off an async du probe for dirs whose size ls reported as 0
+        # (BSD/macOS or FS without block allocation info). The probe fills
+        # dir_sizes as results arrive; draw() shows "..." until then.
+        zero_dirs = [e["name"] for e in entries
+                     if e["type"] == "d" and e["size"] == 0]
+        if zero_dirs and err is None and not du_running:
+            du_running = True
+            import threading
+            t = threading.Thread(
+                target=_async_du_probe,
+                args=(remote, cur, zero_dirs, dir_sizes),
+                daemon=True)
+            t.start()
 
     def activate_selected():
         """Open/view/enter the currently selected entry (same as Enter/Right)."""
@@ -1166,8 +1218,20 @@ def main(stdscr):
                 icon = "*"
             # Size goes at the END of the line, right-aligned to the pane
             # width so it stays put on resize. Truncate the name if needed.
-            if e["type"] in ("d", "f", "l"):
-                sz = fmt_size(e["size"])
+            # For dirs whose ls size was 0, check the async du cache; show
+            # a "..." placeholder until resolved (or permanently if du fails).
+            if e["type"] == "d" and e["name"] in dir_sizes:
+                real = dir_sizes[e["name"]]
+            elif e["type"] == "d" and e["size"] > 0:
+                real = e["size"]            # GNU/Linux: ls already gave block size
+            elif e["type"] in ("f", "l"):
+                real = e["size"]
+            else:
+                real = None
+            if real is not None:
+                sz = fmt_size(real)
+            elif e["type"] == "d" and du_running:
+                sz = "..."  # async du still resolving this dir
             else:
                 sz = ""
             name_part = " %s %s" % (icon, e["name"])
@@ -1199,7 +1263,23 @@ def main(stdscr):
                         "f follow · r refresh · c get · p push · P pw · "
                         "space=select · mouse: click=sel, 2x=open · q quit")
                 bulk_hint = "BULK: space=mark/unmark · c=get all · Esc=cancel"
-                stdscr.addstr(h - 1, 0, (bulk_hint if in_bulk else hint)[:w - 1])
+                base_hint = bulk_hint if in_bulk else hint
+                # Sum visible sizes for a Total line at the bottom-right.
+                total_bytes = 0
+                for e in entries:
+                    real = None
+                    if e["type"] == "d" and e["name"] in dir_sizes:
+                        real = dir_sizes[e["name"]]
+                    elif e["type"] == "d" and e["size"] > 0:
+                        real = e["size"]
+                    elif e["type"] in ("f", "l"):
+                        real = e["size"]
+                    if real:
+                        total_bytes += real
+                total_str = "Total: %s" % fmt_size(total_bytes)
+                pad = max(1, w - 1 - len(base_hint) - len(total_str))
+                footer = base_hint + " " * pad + total_str
+                stdscr.addstr(h - 1, 0, footer[:w - 1])
             except curses.error:
                 pass
         stdscr.refresh()
