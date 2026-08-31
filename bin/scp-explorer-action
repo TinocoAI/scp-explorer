@@ -26,8 +26,11 @@ HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 
 
 def run_herdr(args):
-    r = subprocess.run([HERDR] + args, capture_output=True, text=True)
-    return r.returncode, r.stdout, r.stderr
+    try:
+        r = subprocess.run([HERDR] + args, capture_output=True, text=True, timeout=15)
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "herdr command timed out"
 
 
 def get_current_pane():
@@ -153,18 +156,16 @@ def main():
             if target_obj:
                 break
 
-    if not target_obj:
-        open_explorer([("HERDR_SCP_PANE", ""), ("HERDR_SCP_PATH", "")])
-        return 0
-
-    pane_info = get_pane_info(pane_id)
-    start_path = path_from_title(pane_info) or "~"
-
-    # Toggle: close an existing explorer in this tab before opening a new one.
     existing = find_existing_explorer(tab_id) if tab_id else None
     if existing:
         run_herdr(["pane", "close", existing])
         return 0
+
+    if not target_obj:
+        return open_explorer([("HERDR_SCP_PANE", ""), ("HERDR_SCP_PATH", "")])
+
+    pane_info = get_pane_info(pane_id)
+    start_path = path_from_title(pane_info) or "~"
 
     return open_explorer([
         ("HERDR_SCP_PANE", pane_id),

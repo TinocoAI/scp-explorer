@@ -8,6 +8,16 @@
 > pane. Browse the remote filesystem in a split pane, then `c` to download or
 > `p` to upload — all over your existing SSH connection.
 
+## Changelog
+
+### 1.1.0
+
+- Fix macOS curses mouse-click detection and clicks after scrolling.
+- Fix directory downloads and password-authenticated directory transfers.
+- Fix password-authenticated SSH command construction and uploads using `pv`.
+- Resolve remote `~` paths before transfers and preserve directory-listing errors.
+- Bound file previews to 256 KiB and add regression coverage for transfer paths.
+
 ## Features
 
 - **Zero-config SSH reuse** — uses the SSH session already open in your pane

@@ -69,7 +69,7 @@ _BUTTON4_CONST = getattr(curses, "BUTTON4_PRESSED", 0)
 _BUTTON5_CONST = getattr(curses, "BUTTON5_PRESSED", 0)
 # All plausible BUTTON4 (up) bit values across builds.
 BUTTON4_CANDIDATES = [b for b in (
-    _BUTTON4_CONST, 1 << 19, 8, 1 << 3, 1 << 1, 2
+    _BUTTON4_CONST, 1 << 19, 8, 1 << 3
 ) if b]
 # All plausible BUTTON5 (down) bit values across builds.
 BUTTON5_CANDIDATES = [b for b in (
@@ -183,8 +183,11 @@ def load_data():
 
 
 def run_herdr(args):
-    r = subprocess.run([HERDR] + args, capture_output=True, text=True, timeout=15)
-    return r.returncode, r.stdout, r.stderr
+    try:
+        r = subprocess.run([HERDR] + args, capture_output=True, text=True, timeout=15)
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "herdr command timed out"
 
 
 def parse_ssh(argv):
@@ -299,11 +302,30 @@ class Remote:
 
     def run(self, cmd, want_stderr=False):
         full = self.ssh_base() + [cmd]
-        if self.password:
-            full = ["sshpass", "-e"] + full
-            env = dict(os.environ, SSHPASS=self.password)
-            return subprocess.run(full, capture_output=True, text=True, timeout=25, env=env)
-        return subprocess.run(full, capture_output=True, text=True, timeout=20)
+        env = dict(os.environ, SSHPASS=self.password) if self.password else None
+        return subprocess.run(full, capture_output=True, text=True,
+                              errors="replace", timeout=25 if self.password else 20,
+                              env=env)
+
+    def is_dir(self, path):
+        """Check the type on the remote host, never on the local filesystem."""
+        r = self.run("test -d %s" % self.quote_path(path))
+        return r.returncode == 0
+
+    def resolve_path(self, path):
+        """Resolve a leading remote ~ before using the path in scp arguments."""
+        if not path.startswith("~"):
+            return path
+        if path == "~":
+            shell_path = "~"
+        else:
+            shell_path = "~/" + self.quote_path(path[2:] if path.startswith("~/") else path[1:])
+        try:
+            r = self.run("printf '%s\\n' %s" % ("%s", shell_path))
+        except (OSError, subprocess.TimeoutExpired):
+            return path
+        resolved = (r.stdout or "").strip()
+        return resolved or path
 
     def test_auth(self):
         """Return (ok, message). ok=False with 'PASSWORD' if a password is needed."""
@@ -368,7 +390,7 @@ class Remote:
         else:
             cd_arg = self.quote_path(path)
         # No `2>/dev/null` on the cd so a bad path surfaces as an error.
-        cmd = f"cd {cd_arg} && ls -la --time-style=+%s 2>/dev/null || ls -la"
+        cmd = f"cd {cd_arg} && (ls -la --time-style=+%s 2>/dev/null || ls -la)"
         r = self.run(cmd)
         if r.returncode != 0:
             err = (r.stderr or "").strip() or "remote listing failed"
@@ -410,7 +432,8 @@ class Remote:
         return entries, None
 
     def read_file(self, path):
-        return self.run("cat %s" % self.quote_path(path)).stdout
+        r = self.run("head -c 262144 %s" % self.quote_path(path))
+        return r.stdout
 
 
 def fmt_size(n):
@@ -419,6 +442,11 @@ def fmt_size(n):
             return "%3.0f%s" % (n, unit) if unit == "B" else "%3.1f%s" % (n, unit)
         n /= 1024.0
     return "%.1fP" % n
+
+
+def list_index_from_screen(screen_y, list_top, viewport_offset):
+    """Translate a visible row coordinate into the backing list index."""
+    return screen_y - list_top + viewport_offset
 
 
 def human(path):
@@ -514,7 +542,7 @@ def draw_progress(stdscr, label, prog, width=None, bar_only=False):
     stdscr.refresh()
 
 
-def do_get(remote, remote_path, local_path, stdscr, on_progress):
+def do_get(remote, remote_path, local_path, stdscr, on_progress, is_dir=None):
     """Download remote_path -> local_path (file or directory).
 
     Single files stream through `ssh … cat` (optionally via pv) for a real
@@ -523,7 +551,9 @@ def do_get(remote, remote_path, local_path, stdscr, on_progress):
     the pane bottom line. Returns (ok, message)."""
     name = os.path.basename(remote_path.rstrip("/")) or remote_path
     on_progress("get %s" % name, Progress(None))
-    if os.path.isdir(remote_path):
+    if is_dir is None:
+        is_dir = remote.is_dir(remote_path)
+    if is_dir:
         # directory copy: scp -r, indeterminate
         return _scp_transfer(remote, "get", remote_path, local_path,
                               stdscr, on_progress)
@@ -573,9 +603,11 @@ def _stream_collect(proc, pipe, tmp, local_path, name, direction):
     rc = proc.wait()
     if pipe is not None:
         pipe.wait()
-    if rc == 0 and tmp:
-        os.replace(tmp, local_path)
-        return True, "got %s -> %s" % (name, human(local_path))
+    if rc == 0:
+        if tmp:
+            os.replace(tmp, local_path)
+        verb = "got" if direction == "get" else "pushed"
+        return True, "%s %s -> %s" % (verb, name, human(local_path))
     if tmp:
         try:
             os.remove(tmp)
@@ -609,6 +641,8 @@ def _scp_transfer(remote, direction, src, dst, stdscr, on_progress):
             total = None
     prog = Progress(total)
     on_progress("%s %s" % (direction, name), prog)
+    if remote.password:
+        args = ["sshpass", "-e"] + args
     proc = subprocess.Popen(args, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, env=remote._scp_env())
     # scp is silent, so advance the bar by an estimate: if we know the total,
@@ -907,8 +941,8 @@ def local_picker(stdscr, mode, start=None):
                 continue
             mouse_debug(mstate)
             top = 2
-            clicked = my - top
-            in_list = (top <= my <= h - 2) and (0 <= clicked < len(lentries))
+            clicked = list_index_from_screen(my, top, ltop)
+            in_list = (top <= my <= h - 2) and (ltop <= clicked < len(lentries))
             # 1) Scroll (wheel) always moves the selection and never activates.
             sdir = mouse_scroll_dir(mstate)
             if sdir != 0:
@@ -1096,8 +1130,16 @@ def main(stdscr):
     need_pw = False
 
     def reload(clear_marks=True):
-        nonlocal entries, err, sel, need_pw, msg_line, top_idx, marks, dir_sizes, du_running
-        entries, err = remote.list_dir(cur)
+        nonlocal cur, entries, err, sel, need_pw, msg_line, top_idx, marks, dir_sizes, du_running
+        resolved = remote.resolve_path(cur)
+        if resolved != cur:
+            cur = resolved
+        try:
+            entries, err = remote.list_dir(cur)
+        except subprocess.TimeoutExpired:
+            entries, err = [], "remote operation timed out"
+        except OSError as ex:
+            entries, err = [], "remote operation failed: %s" % ex
         sel = 0
         top_idx = 0
         if clear_marks:
@@ -1152,8 +1194,11 @@ def main(stdscr):
             cur = os.path.normpath(new)
             reload()
         else:
-            content = remote.read_file(os.path.join(cur, e["name"]))
-            viewer(content, os.path.join(cur, e["name"]))
+            try:
+                content = remote.read_file(os.path.join(cur, e["name"]))
+                viewer(content, os.path.join(cur, e["name"]))
+            except (OSError, subprocess.TimeoutExpired) as ex:
+                msg_line = "ERR: unable to read file: %s" % ex
 
     reload()
     # Seed the follow tracker with the pane's CURRENT remote CWD (not our
@@ -1356,8 +1401,8 @@ def main(stdscr):
             mouse_debug(mstate)
             h = stdscr.getmaxyx()[0]
             top = 2
-            clicked = my - top
-            in_list = (top <= my <= h - 2) and (0 <= clicked < len(entries))
+            clicked = list_index_from_screen(my, top, top_idx)
+            in_list = (top <= my <= h - 3) and (top_idx <= clicked < len(entries))
             # 1) Scroll (wheel) always moves the selection and never activates.
             sdir = mouse_scroll_dir(mstate)
             if sdir != 0:
