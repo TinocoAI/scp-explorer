@@ -10,6 +10,12 @@
 
 ## Changelog
 
+### 1.1.1
+
+- Fix push picker `Tab` selecting the parent directory instead of the highlighted file.
+- Add multi-select push with `Space` and confirmation with `Tab`.
+- Fix push progress when `pv` is installed and ensure small files reach 100%.
+
 ### 1.1.0
 
 - Fix macOS curses mouse-click detection and clicks after scrolling.
@@ -98,7 +104,8 @@ f ........................ toggle follow-mode (track the SSH pane's cd)
 space .................... mark/unmark current entry (enters bulk mode)
 c ........................ get file/dir from remote -> local picker
                              (in bulk mode) download all marked entries
-p ........................ push local file -> remote (local picker)
+p ........................ push local file(s) -> remote (local picker)
+                             (Space marks files; Tab uploads marked files)
 r ........................ refresh
 P ........................ set/change SSH password (stored in memory only)
 q / Esc .................. close
@@ -124,7 +131,9 @@ Mouse: click selects, 2nd click opens; wheel scrolls
 A navigable browser of your LOCAL machine:
 - Up/Down / PgUp / PgDn ... move
 - Enter ................... open a directory (or choose a file in 'file' mode)
-- Tab (dir mode) .......... confirm the current directory as the target
+- Space ................... mark/unmark an entry in 'file' mode
+- Tab (file mode) .......... choose the highlighted file, or upload marked entries
+- Tab (dir mode) ........... confirm the current directory as the target
 - g ....................... go to ~
 - / ....................... jump to an absolute local path
 - Esc / q ................. cancel
@@ -162,9 +171,10 @@ line of the explorer pane for the duration of the transfer:
     [#####-----] 50%  2.3M/s  eta 4s  get foo.iso
 
 - **Single files**: transferred by streaming `ssh ... cat` through `pv` (if
-  `pv` is installed: `brew install pv`). `pv` reports exact bytes, so the bar
-  shows a true percentage, a live transfer rate, and an ETA. If `pv` is absent,
-  the remote file size is probed with `stat` so the bar still shows a real %.
+  `pv` is installed: `brew install pv`). The numeric progress output is mapped
+  against the local file size, so the bar shows a true percentage, a live
+  transfer rate, and an ETA. If `pv` is absent, the local file is streamed
+  directly and the bar still shows a real %.
 - **Directories** (`c`/`p` on a folder): copied with `scp -r` and shown with an
   indeterminate animated bar plus a live speed estimate (the total size is
   probed via `du`/`os.walk`). scp itself is silent, so the % is a smooth ramp.

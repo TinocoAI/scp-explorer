@@ -468,8 +468,9 @@ class Progress:
         now = time.time()
         self.done += delta
         dt = now - self.last
-        if dt >= 0.4:               # recompute rate ~2.5x/sec
-            inst = (self.done - self.last_done) / dt if dt > 0 else 0
+        if dt >= 0.4 or (delta == 0 and self.done > 0):
+            elapsed = now - self.start
+            inst = self.done / elapsed if elapsed > 0 else 0
             # exponential smoothing so the displayed speed isn't jumpy
             self.rate = self.rate * 0.6 + inst * 0.4
             self.last = now
@@ -680,24 +681,33 @@ def do_push(remote, local_path, remote_path, stdscr, on_progress):
                              stdscr, on_progress)
     prefix, env = remote.ssh_prefix()
     ssh_cmd = prefix + [remote.target, "cat > " + remote.quote_path(remote_path)]
+    size = os.path.getsize(local_path)
     if which("pv"):
         pipe = subprocess.Popen(["pv", "-bnp", "-i", "0.3", "-c"],
                                 stdin=open(local_path, "rb"),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         proc = subprocess.Popen(ssh_cmd, stdin=pipe.stdout,
                                 stderr=subprocess.DEVNULL, env=env)
-        prog = Progress(None)
+        # `pv -n` reports a percentage, not a byte count. Convert it back to
+        # bytes so Progress can calculate the correct percentage and rate.
+        prog = Progress(size)
         while True:
             line = pipe.stderr.readline()
             if not line:
                 break
             try:
-                prog.done = int(line.strip())
+                pct = max(0.0, min(100.0, float(line.strip())))
+                prog.done = size * pct / 100.0
+                prog.update(0)
             except ValueError:
                 pass
             on_progress("push %s" % name, prog)
-        return _stream_collect(proc, pipe, None, remote_path, name, "push")
-    size = os.path.getsize(local_path)
+        result = _stream_collect(proc, pipe, None, remote_path, name, "push")
+        if result[0]:
+            prog.done = size
+            prog.update(0)
+            on_progress("push %s" % name, prog)
+        return result
     prog = Progress(size)
     src = open(local_path, "rb")
     proc = subprocess.Popen(ssh_cmd, stdin=subprocess.PIPE,
@@ -712,8 +722,7 @@ def do_push(remote, local_path, remote_path, stdscr, on_progress):
             proc.stdin.write(b)
         except (BrokenPipeError, ValueError):
             break
-        sent += len(b)
-        prog.done = sent
+        prog.update(len(b))
         on_progress("push %s" % name, prog)
         if proc.poll() is not None:
             break
@@ -724,6 +733,8 @@ def do_push(remote, local_path, remote_path, stdscr, on_progress):
     src.close()
     rc = proc.wait()
     if rc == 0:
+        prog.update(0)
+        on_progress("push %s" % name, prog)
         return True, "pushed %s -> %s" % (name, human(remote_path))
     return False, "ERR: push failed (rc=%d)" % rc
 
@@ -758,6 +769,31 @@ def do_bulk_get(remote, names, cur, local_dir, stdscr, on_progress):
     if ok_count == total_files:
         return True, "got %d/%d files -> %s" % (ok_count, total_files, human(local_dir))
     return False, "got %d/%d (failures: %d) -> %s" % (ok_count, total_files, fail_count, human(local_dir))
+
+
+def do_bulk_push(remote, paths, cur, stdscr, on_progress):
+    """Upload several local entries into the current remote directory."""
+    ok_count = 0
+    fail_count = 0
+    total = len(paths)
+    for idx, local_path in enumerate(paths, 1):
+        remote_path = os.path.join(cur, os.path.basename(local_path.rstrip("/")))
+        label = "push %s (%d/%d)" % (os.path.basename(local_path), idx, total)
+        on_progress(label, Progress(None))
+        try:
+            ok, result = do_push(remote, local_path, remote_path,
+                                 stdscr, on_progress)
+        except Exception as ex:
+            log("BULK PUSH error", local_path, repr(ex))
+            ok, result = False, "ERR: %s" % ex
+        if ok:
+            ok_count += 1
+        else:
+            fail_count += 1
+        log("BULK PUSH", local_path, ok, result)
+    if ok_count == total:
+        return True, "pushed %d/%d files" % (ok_count, total)
+    return False, "pushed %d/%d (failures: %d)" % (ok_count, total, fail_count)
 
 
 def prompt_str(stdscr, label, default="", secret=False):
@@ -875,6 +911,7 @@ def local_picker(stdscr, mode, start=None):
     lentries, lerr = local_list(lcur)
     lsel = 0
     ltop = 0  # first visible entry (viewport scroll offset)
+    marks = set()  # selected paths in file mode
     stdscr.timeout(-1)  # blocking while picking
 
     def clamp_lview():
@@ -897,8 +934,10 @@ def local_picker(stdscr, mode, start=None):
         stdscr.erase()
         hint = ("Tab/click-header=choose dir · click=sel · 2x=open · g=home · /=jump · Esc=cancel"
                 if mode == "dir" else
-                "Enter/2x-click=choose file · click=open dir · g=home · /=jump · Esc=cancel")
-        title = " LOCAL %s  [%s]" % ("dir" if mode == "dir" else "file", lcur)
+                "Enter=choose · Space=mark · Tab=choose marked · click=open dir · g=home · /=jump · Esc=cancel")
+        title = " LOCAL %s  [%s]%s" % (
+            "dir" if mode == "dir" else "file", lcur,
+            "  (SELECTED:%d)" % len(marks) if marks else "")
         try:
             stdscr.addstr(0, 0, (title + "  " + hint)[:w - 1], curses.A_REVERSE)
         except curses.error:
@@ -910,6 +949,10 @@ def local_picker(stdscr, mode, start=None):
                 break
             e = lentries[idx]
             icon = {"up": "..", "d": "▸", "l": "→", "f": " "}.get(e["type"], " ")
+            full_path = os.path.join(lcur, e["name"])
+            marked = mode == "file" and full_path in marks
+            if marked:
+                icon = "*"
             if e["type"] in ("d", "f", "l"):
                 sz = fmt_size(e["size"])
             else:
@@ -921,6 +964,8 @@ def local_picker(stdscr, mode, start=None):
             if len(line) > w - 1:
                 line = line[:w - 1]
             attr = curses.A_REVERSE if idx == lsel else curses.A_NORMAL
+            if marked:
+                attr |= curses.A_BOLD
             try:
                 stdscr.addstr(i, 0, line[:w - 1], attr)
             except curses.error:
@@ -962,10 +1007,12 @@ def local_picker(stdscr, mode, start=None):
                         lcur = os.path.dirname(lcur.rstrip("/")) or "/"
                         lentries, lerr = local_list(lcur)
                         lsel = 0
+                        marks.clear()
                     elif e["type"] in ("d", "l"):
                         lcur = os.path.join(lcur, e["name"])
                         lentries, lerr = local_list(lcur)
                         lsel = 0
+                        marks.clear()
                     elif e["type"] == "f":
                         if mode == "file":
                             stdscr.timeout(400)
@@ -997,29 +1044,53 @@ def local_picker(stdscr, mode, start=None):
                 lcur = os.path.dirname(lcur.rstrip("/")) or "/"
                 lentries, lerr = local_list(lcur)
                 lsel = 0
+                marks.clear()
             elif e["type"] in ("d", "l"):
                 lcur = os.path.join(lcur, e["name"])
                 lentries, lerr = local_list(lcur)
                 lsel = 0
+                marks.clear()
             elif e["type"] == "f":
                 if mode == "file":
                     stdscr.timeout(400)
                     return os.path.join(lcur, e["name"])
                 # dir mode: files are not valid dir targets; ignore
-        elif ch == ord('\t') or (mode == "dir" and ch in (ord(' '),)):
+        elif ch == ord('\t'):
+            if mode == "dir":
+                # confirm current directory as the target
+                stdscr.timeout(400)
+                return lcur
+            # In file mode, Tab confirms the marked files. With no marks,
+            # confirm only the highlighted file — never the parent directory.
+            if marks:
+                stdscr.timeout(400)
+                return sorted(marks)
+            if lentries and lentries[lsel]["type"] == "f":
+                stdscr.timeout(400)
+                return os.path.join(lcur, lentries[lsel]["name"])
+        elif mode == "dir" and ch in (ord(' '),):
             # confirm current directory as the target
             stdscr.timeout(400)
             return lcur
+        elif mode == "file" and ch == ord(' '):
+            if lentries and lentries[lsel]["type"] in ("d", "f", "l"):
+                path = os.path.join(lcur, lentries[lsel]["name"])
+                if path in marks:
+                    marks.remove(path)
+                else:
+                    marks.add(path)
         elif ch == ord('g'):
             lcur = os.path.expanduser("~")
             lentries, lerr = local_list(lcur)
             lsel = 0
+            marks.clear()
         elif ch == ord('/'):
             p = prompt_str(stdscr, "local path> ", default="/")
             if p and os.path.isdir(p):
                 lcur = os.path.abspath(p)
                 lentries, lerr = local_list(lcur)
                 lsel = 0
+                marks.clear()
     stdscr.timeout(400)
     return None
 
@@ -1539,7 +1610,22 @@ def main(stdscr):
                     msg_line = res
         elif ch == ord('p'):
             src = local_picker(stdscr, "file", start=os.path.expanduser("~"))
-            if src and os.path.exists(src):
+            if isinstance(src, list):
+                paths = [p for p in src if os.path.exists(p)]
+                if paths:
+                    def _bulk_push_cb(label, prog):
+                        draw_progress(stdscr, label, prog)
+                    try:
+                        ok, res = do_bulk_push(
+                            remote, paths, cur, stdscr, _bulk_push_cb)
+                    except Exception as ex:
+                        log("BULK PUSH error", repr(ex))
+                        ok, res = False, "ERR: %s" % ex
+                    reload()
+                    msg_line = res
+                else:
+                    msg_line = "no valid files selected"
+            elif src and os.path.exists(src):
                 remote_path = os.path.join(cur, os.path.basename(src))
                 def _cb(label, prog):
                     draw_progress(stdscr, label, prog)

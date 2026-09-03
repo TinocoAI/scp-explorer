@@ -1,5 +1,6 @@
 import importlib.util
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -85,3 +86,99 @@ def test_file_preview_is_bounded():
     with mock.patch.object(remote, "run", return_value=completed) as run:
         assert remote.read_file("/var/log/app.log") == "preview"
     assert run.call_args.args[0] == "head -c 262144 /var/log/app.log"
+
+
+def test_local_picker_tab_in_file_mode_returns_selected_file_not_parent():
+    class Screen:
+        def __init__(self):
+            self.keys = iter([explorer.curses.KEY_DOWN, ord("\t")])
+
+        def getmaxyx(self):
+            return 24, 80
+
+        def timeout(self, *_):
+            pass
+
+        def erase(self):
+            pass
+
+        def addstr(self, *_):
+            pass
+
+        def refresh(self):
+            pass
+
+        def getch(self):
+            return next(self.keys)
+
+        def move(self, *_):
+            pass
+
+    with tempfile.TemporaryDirectory() as directory:
+        selected = Path(directory) / "upload.txt"
+        selected.write_text("payload")
+        with mock.patch.object(explorer.curses, "curs_set"):
+            result = explorer.local_picker(Screen(), "file", directory)
+    assert result == str(selected)
+
+
+def test_local_picker_file_mode_tab_returns_marked_files():
+    class Screen:
+        def __init__(self):
+            self.keys = iter([explorer.curses.KEY_DOWN, ord(" "), ord("\t")])
+
+        def getmaxyx(self):
+            return 24, 80
+
+        def timeout(self, *_):
+            pass
+
+        def erase(self):
+            pass
+
+        def addstr(self, *_):
+            pass
+
+        def refresh(self):
+            pass
+
+        def getch(self):
+            return next(self.keys)
+
+        def move(self, *_):
+            pass
+
+    with tempfile.TemporaryDirectory() as directory:
+        selected = Path(directory) / "upload.txt"
+        selected.write_text("payload")
+        with mock.patch.object(explorer.curses, "curs_set"):
+            result = explorer.local_picker(Screen(), "file", directory)
+    assert result == [str(selected)]
+
+
+def test_push_pv_progress_uses_percentage_against_file_size():
+    remote = mock.Mock()
+    remote.target = "user@example.com"
+    remote.ssh_prefix.return_value = (["ssh"], None)
+    remote.quote_path.side_effect = lambda p: p
+
+    pv = mock.Mock()
+    pv.stdin = mock.Mock()
+    pv.stderr.readline.side_effect = [b"50\n", b""]
+    pv.wait.return_value = 0
+    ssh = mock.Mock()
+    ssh.wait.return_value = 0
+
+    progress = []
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory) / "small.txt"
+        source.write_bytes(b"1234567890")
+        with mock.patch.object(explorer, "which", return_value="/usr/bin/pv"):
+            with mock.patch.object(explorer.subprocess, "Popen", side_effect=[pv, ssh]):
+                ok, _ = explorer.do_push(
+                    remote, str(source), "/remote/small.txt", mock.Mock(),
+                    lambda _, p: progress.append((p.done, p.pct)))
+
+    assert ok is True
+    assert (5.0, 50) in progress
+    assert progress[-1] == (10, 100)
